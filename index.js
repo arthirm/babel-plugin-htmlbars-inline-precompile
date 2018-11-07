@@ -1,5 +1,6 @@
 'use strict';
-
+const fs = require('fs-extra');
+const Path = require('path');
 const parseModuleName = require('./lib/parse-module-name');
 
 module.exports = function(babel) {
@@ -11,9 +12,35 @@ module.exports = function(babel) {
     }
 
     let compiledTemplateString = `Ember.HTMLBars.template(${precompile(template, options)})`;
-
     return compiledTemplateString;
   }
+
+  // TODO: Extract only if project is addon
+  function extractInlineTemplatesForPrebuild(path, state, template) {
+    let fileName = state.file.opts.filename;
+    // Create hbs file name from e.g, From 'addon/components/my-component.js' to 'my-component134166'
+    fileName =  Path.basename(fileName, Path.extname(fileName));
+    // Appending node.start and end to create a new hbs file for every inline-template present in a js file (if any).
+    fileName = fileName + path.node.start + path.node.end;
+
+    // The extracted hbs file should be imported in the my-component.js file.
+    // Since the extracted template file belongs to the app. The import statement will be from dummy app of the addon
+    let extractedTemplatePath = `dummy/templates/${fileName}`;
+    // TODO: Change file.addImport to addDefault for babel 7
+    // Add the import statement at the top of the js file in code.
+    let importName = state.file.addImport(extractedTemplatePath, "default", fileName).name;
+    // Replace the inline-template hbs call with imported moduleName. The importName contains the moduleName of the import statement
+    path.replaceWithSourceString(importName);
+
+    // Store the extracted inline-templates in `<my-addon>/extracted-templates/templates/` directory
+    // An example file path will be `<my-addon>/extracted-templates/templates/my-component124166.hbs`
+    let extractedTemplateActualpath = `${process.cwd()}/extracted-templates/templates/${fileName}.hbs`;
+    if(!fs.existsSync(`${process.cwd()}/extracted-templates/`)) {
+      fs.mkdirpSync(`${process.cwd()}/extracted-templates/templates`);
+    }
+    fs.writeFileSync(extractedTemplateActualpath, template);
+  }
+
 
   return {
     visitor: {
@@ -63,7 +90,11 @@ module.exports = function(babel) {
           options.meta.moduleName = moduleName;
         }
 
-        path.replaceWithSourceString(compileTemplate(state.opts.precompile, template, state.file.opts.filename));
+        if (process.env.PREBUILD) {
+          extractInlineTemplatesForPrebuild(path, state, template);
+        } else {
+          path.replaceWithSourceString(compileTemplate(state.opts.precompile, template, filename));
+        }
       },
 
       CallExpression(path, state) {
@@ -84,7 +115,11 @@ module.exports = function(babel) {
           throw path.buildCodeFrameError(argumentErrorMsg);
         }
 
-        path.replaceWithSourceString(compileTemplate(state.opts.precompile, template, state.file.opts.filename));
+        if (process.env.PREBUILD) {
+          extractInlineTemplatesForPrebuild(path, state, template);
+        } else {
+          path.replaceWithSourceString(compileTemplate(state.opts.precompile, template, state.file.opts.filename));
+        }
       },
     }
   };
